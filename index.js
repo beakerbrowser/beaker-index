@@ -67,7 +67,7 @@ async function main () {
             newDb.sources.push(user)
           }
 
-          await readLinkGotos(newDb, user, userDrive)
+          await indexLinks(newDb, user, userDrive)
           
           if (!deepEqual(currentDb, newDb)) {
             console.log('Writing new database')
@@ -154,7 +154,15 @@ async function readManifest (userDrive) {
   })
 }
 
-async function readLinkGotos (db, user, userDrive) {
+async function indexLinks (db, user, userDrive) {
+  var sourceIndex = db.sources.findIndex(s => s.url === user.url)
+
+  // clear out existing
+  for (let group in db.links) {
+    db.links[group] = db.links[group].filter(link => link.sourceIndex !== sourceIndex)
+  }
+
+  // pull current
   let linksFolders = await timeout(10e3, [], () => userDrive.promises.readdir('/links').catch(e => ([])))
   for (let folder of linksFolders) {
     let gotos = await timeout(10e3, [], () => userDrive.promises.readdir(`/links/${folder}`, {includeStats: true}).catch(e => ([])))
@@ -162,7 +170,7 @@ async function readLinkGotos (db, user, userDrive) {
       if (!goto.stat.metadata.href) continue
       db.links[folder] = db.links[folder] || []
       db.links[folder].push({
-        sourceIndex: db.sources.indexOf(user),
+        sourceIndex,
         title: goto.stat.metadata.title ? goto.stat.metadata.title.toString('utf8') : goto.name,
         description: goto.stat.metadata.description ? goto.stat.metadata.description.toString('utf8') : undefined,
         href: normalizeUrl(goto.stat.metadata.href.toString('utf8'))
