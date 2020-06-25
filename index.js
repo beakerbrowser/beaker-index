@@ -6,6 +6,8 @@ const got = require('got')
 
 main()
 async function main () {
+  console.log('Beaker Indexer')
+
   var hserver
   var hclient
   const cleanup = async () => {
@@ -15,25 +17,28 @@ async function main () {
   process.once('SIGINT', cleanup)
   process.once('SIGTERM', cleanup)
 
-  console.log('Initializing hyperspace server')
   hserver = new HyperspaceServer({
     host: 'beaker-index-hyperspace',
     storage: './.data'
   })
   await hserver.ready()
 
-  console.log('Initializing hyperspace client')
   hclient = new HyperspaceClient({ host: 'beaker-index-hyperspace' })
   await hclient.ready()
 
   const indexDriveUrl = await fsp.readFile('./.index-drive-url', 'utf8').catch(e => undefined)
-  console.log(indexDriveUrl ? 'Loading' : 'Creating new', 'index drive', indexDriveUrl)
+  console.log(indexDriveUrl ? 'Loading' : 'Creating new', 'index drive')
   const indexDrive = hyperdrive(hclient.corestore, indexDriveUrl ? urlToKey(indexDriveUrl) : null, {extension: false})
   await indexDrive.promises.ready()
   await fsp.writeFile('./.index-drive-url', `hyper://${indexDrive.key.toString('hex')}`, 'utf8')
   await hclient.network.configure(indexDrive.discoveryKey, { announce: true, flush: true })
   console.log('Index drive: hyper://' + indexDrive.key.toString('hex'))
   await ensureIndexDriveManifest(indexDrive)
+  var currentDb = await readDb(indexDrive)
+
+  console.log('')
+  console.log('---')
+  console.log('')
 
   while (true) {
     console.log('Indexer tick', (new Date()).toLocaleString())
@@ -41,10 +46,7 @@ async function main () {
       let users = await getUsersList()
       console.log(users.length, 'users')      
 
-      let newDb = {
-        sources: users,
-        links: {}
-      }
+      let newDb = JSON.parse(JSON.stringify(currentDb))
 
       for (let user of users) {
         let userDrive
@@ -57,26 +59,38 @@ async function main () {
             if (user.title && typeof user.title === 'string' && user.title !== userManifest.title) user.title = userManifest.title
             if (user.description && typeof user.description === 'string' && user.description !== userManifest.description) user.description = userManifest.description
           }
+          let dbUser = newDb.sources.find(u => u.url === user.url)
+          if (dbUser) {
+            if (dbUser.title !== user.title) dbUser.title = user.title
+            if (dbUser.description !== user.description) dbUser.description = user.description
+          } else {
+            newDb.sources.push(user)
+          }
 
           await readLinkGotos(newDb, user, userDrive)
+          
+          console.log(currentDb, newDb)
+          if (!deepEqual(currentDb, newDb)) {
+            console.log('Writing new database')
+            await writeDb(indexDrive, newDb)
+            currentDb = JSON.parse(JSON.stringify(newDb))
+          }
         } catch (e) {
           console.log('Failed to index user', e)
         } finally {
           if (userDrive) await userDrive.promises.close()
         }
-      }
-
-      let currentDb = await readDb(indexDrive)
-      console.log(currentDb, newDb)
-      if (!deepEqual(currentDb, newDb)) {
-        console.log('Writing new database')
-        await writeDb(indexDrive, newDb)
-      }
+      }  
       
+      // TODO
+      // we need to prune sources that have been removed from the userlist
+      // which requires changing all the `sourceIndex` values in the links
+      // -prf
+
+
     } catch (e) {
       console.log('Error during tick', e)
     }
-    await new Promise(r => setTimeout(r, 60e3))
   }
 }
 
@@ -99,7 +113,7 @@ async function getUsersList () {
     throw new Error('Failed to fetch users')
   }
   return res.body.users.map(user => ({
-    url: user.driveUrl,
+    url: normalizeUrl(user.driveUrl),
     title: user.title,
     description: user.description
   }))
@@ -110,7 +124,8 @@ async function readDb (indexDrive) {
     const str = await indexDrive.promises.readFile('/db.json', 'utf8').catch(e => '')
     const obj = JSON.parse(str)
     if (!obj.sources || !Array.isArray(obj.sources)) throw "invalid"
-    if (obj.links || typeof obj.links !== 'object') throw "invalid"
+    if (!obj.links || typeof obj.links !== 'object') throw "invalid"
+    return obj
   } catch (e) {
     return {sources: [], links: {}}
   }
@@ -120,8 +135,7 @@ async function writeDb (indexDrive, db) {
   await indexDrive.promises.writeFile('/db.json', JSON.stringify(db, null, 2), 'utf8')
 }
 
-async function loadDrive (hclient, url) {  
-  console.log('Loading user drive:', url)
+async function loadDrive (hclient, url) {
   const key = urlToKey(url)
   const userDrive = hyperdrive(hclient.corestore, key, {extension: false})
   await userDrive.promises.ready()
@@ -150,9 +164,9 @@ async function readLinkGotos (db, user, userDrive) {
       db.links[folder] = db.links[folder] || []
       db.links[folder].push({
         sourceIndex: db.sources.indexOf(user),
-        title: goto.stat.metadata.title || goto.name,
-        description: goto.stat.metadata.description,
-        href: normalizeUrl(goto.stat.metadata.href)
+        title: goto.stat.metadata.title ? goto.stat.metadata.title.toString('utf8') : goto.name,
+        description: goto.stat.metadata.description ? goto.stat.metadata.description.toString('utf8') : undefined,
+        href: normalizeUrl(goto.stat.metadata.href.toString('utf8'))
       })
     }
   }
@@ -186,7 +200,6 @@ function deepEqual (x, y) {
   }
   else if ((typeof x == "object" && x != null) && (typeof y == "object" && y != null)) {
     if (Object.keys(x).length != Object.keys(y).length) {
-      console.log('key length differed', x, y)
       return false;
     }
 
@@ -197,7 +210,6 @@ function deepEqual (x, y) {
           return false;
       }
       else {
-        console.log('propery mismatch', prop, x, y)
         return false;
       }
     }
@@ -205,7 +217,6 @@ function deepEqual (x, y) {
     return true;
   }
   else {
-    console.log('not equal', x, y)
     return false;
   }
 }
