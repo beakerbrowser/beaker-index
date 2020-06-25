@@ -69,7 +69,6 @@ async function main () {
 
           await readLinkGotos(newDb, user, userDrive)
           
-          console.log(currentDb, newDb)
           if (!deepEqual(currentDb, newDb)) {
             console.log('Writing new database')
             await writeDb(indexDrive, newDb)
