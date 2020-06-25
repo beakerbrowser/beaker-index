@@ -1,0 +1,17 @@
+{
+  "name": "beaker-index",
+  "version": "1.0.0",
+  "description": "An indexer driven from the beaker userlist",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Paul Frazee <pfrazee@gmail.com>",
+  "license": "MIT",
+  "dependencies": {
+    "hyperdrive": "git+https://github.com/hypercore-protocol/hyperdrive#hyperspace-port",
+    "hyperspace": "github:hyperspace-org/hyperspace#master",
+    "got": "^11.3.0"
+  }
+}
