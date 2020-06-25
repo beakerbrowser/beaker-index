@@ -30,14 +30,13 @@ async function main () {
   console.log(indexDriveUrl ? 'Loading' : 'Creating new', 'index drive', indexDriveUrl)
   const indexDrive = hyperdrive(hclient.corestore, indexDriveUrl ? urlToKey(indexDriveUrl) : null, {extension: false})
   await indexDrive.promises.ready()
-  indexDrive.on('error', console.log)
   await fsp.writeFile('./.index-drive-url', `hyper://${indexDrive.key.toString('hex')}`, 'utf8')
   await hclient.network.configure(indexDrive.discoveryKey, { announce: true, flush: true })
   console.log('Index drive: hyper://' + indexDrive.key.toString('hex'))
   await ensureIndexDriveManifest(indexDrive)
 
   while (true) {
-    console.log('Indexer tick')
+    console.log('Indexer tick', (new Date()).toLocaleString())
     try {
       let users = await getUsersList()
       console.log(users.length, 'users')      
@@ -48,10 +47,10 @@ async function main () {
       }
 
       for (let user of users) {
+        let userDrive
         try {
           console.log('Indexing', user)
-          let userDrive = await loadDrive(hclient, user.url)
-          await downloadNeededData(userDrive)
+          userDrive = await loadDrive(hclient, user.url)
           
           let userManifest = await readManifest(userDrive)
           if (userManifest) {
@@ -60,9 +59,10 @@ async function main () {
           }
 
           await readLinkGotos(newDb, user, userDrive)
-          console.log('Indexed', user)
         } catch (e) {
-          console.log('Failed to index user', user, e)
+          console.log('Failed to index user', e)
+        } finally {
+          if (userDrive) await userDrive.promises.close()
         }
       }
 
@@ -76,7 +76,7 @@ async function main () {
     } catch (e) {
       console.log('Error during tick', e)
     }
-    await new Promise(r => setTimeout(r, 10e3))
+    await new Promise(r => setTimeout(r, 60e3))
   }
 }
 
@@ -125,43 +125,46 @@ async function loadDrive (hclient, url) {
   const key = urlToKey(url)
   const userDrive = hyperdrive(hclient.corestore, key, {extension: false})
   await userDrive.promises.ready()
-  userDrive.on('error', console.log)
   await hclient.network.configure(userDrive.discoveryKey, { announce: false, lookup: true, flush: true })
 
   return userDrive
 }
 
-async function downloadNeededData (userDrive) {
-  await userDrive.promises.download('/index.json')
-  await userDrive.promises.download('/links')
-}
-
 async function readManifest (userDrive) {
-  const str = await userDrive.promises.readFile('/index.json', 'utf8').catch(e => undefined)
-  try {
-    return JSON.parse(str)
-  } catch (e) {
-    return undefined
-  }
+  return timeout(10e3, undefined, async () => {
+    const str = await userDrive.promises.readFile('/index.json', 'utf8').catch(e => undefined)
+    try {
+      return JSON.parse(str)
+    } catch (e) {
+      return undefined
+    }
+  })
 }
 
 async function readLinkGotos (db, user, userDrive) {
-  let linksFolders = await userDrive.promises.readdir('/links').catch(e => ([]))
+  let linksFolders = await timeout(10e3, [], () => userDrive.promises.readdir('/links').catch(e => ([])))
   for (let folder of linksFolders) {
-    let gotos = await userDrive.promises.readdir(`/links/${folder}`, {includeStats: true}).catch(e => ([]))
+    let gotos = await timeout(10e3, [], () => userDrive.promises.readdir(`/links/${folder}`, {includeStats: true}).catch(e => ([])))
     for (let goto of gotos.filter(item => item.name.endsWith('.goto'))) {
       if (!goto.stat.metadata.href) continue
-      let [_, _2, groupid, filename] = goto.path.split('/')
-      if (!groupid) continue
-      db.links[groupid] = db.links[groupid] || []
-      db.links[groupid].push({
+      db.links[folder] = db.links[folder] || []
+      db.links[folder].push({
         sourceIndex: db.sources.indexOf(user),
-        title: goto.stat.metadata.title || filename,
+        title: goto.stat.metadata.title || goto.name,
         description: goto.stat.metadata.description,
         href: normalizeUrl(goto.stat.metadata.href)
       })
     }
   }
+}
+
+async function timeout (n, timeoutValue, fn) {
+  return Promise.race([
+    fn(),
+    new Promise((resolve, reject) => {
+      setTimeout(() => { resolve(timeoutValue) }, n)
+    })
+  ])
 }
 
 function urlToKey (url) {
